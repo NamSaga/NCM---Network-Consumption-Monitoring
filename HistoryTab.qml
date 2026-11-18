@@ -128,6 +128,14 @@ Column {
                                     color: tabRoot.host.upColor
                                 }
                             }
+                            HourlyChart {
+                                visible: dayRow.open && hours.length === 24
+                                width: parent.width
+                                plotHeight: 48
+                                host: tabRoot.host
+                                hours: dayRow.open ? tabRoot.host.hoursFor(dayRow.modelData.date) : []
+                                currentHour: dayRow.isToday ? new Date().getHours() : -1
+                            }
                             Repeater {
                                 model: dayRow.open ? dayRow.modelData.nets : []
                                 delegate: NetLine {

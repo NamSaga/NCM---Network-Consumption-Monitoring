@@ -206,6 +206,12 @@ PluginComponent {
         return rows;
     }
 
+    function hoursFor(day) {
+        if (day === live.day)
+            return live.hours || [];
+        return (store.hours || {})[day] || [];
+    }
+
     function historyRows() {
         const d = allDays();
         return Object.keys(d).sort().reverse().map(k => {
@@ -304,6 +310,7 @@ PluginComponent {
     property bool dirty: false
 
     property var days: ({})          // "yyyy-MM-dd" -> { netKey: [rx, tx] }
+    property var hours: ({})         // "yyyy-MM-dd" -> [[rx, tx] × 24], consumption only
     property var networks: ({})      // netKey -> { label, kind, metered, iface, last }
     property var ifaceMap: ({})      // iface -> { counted, connected, key, label, kind, metered, primary }
     property var lastCounters: ({})  // iface -> [rx, tx]
@@ -350,6 +357,7 @@ PluginComponent {
         const storedDays = PluginService.loadPluginState(pluginId, "days", null);
         days = deepCopy(storedDays || {}) || {};
         networks = deepCopy(PluginService.loadPluginState(pluginId, "networks", {})) || {};
+        hours = deepCopy(PluginService.loadPluginState(pluginId, "hours", {})) || {};
         savedCounters = deepCopy(PluginService.loadPluginState(pluginId, "counters", {})) || {};
         savedBootId = PluginService.loadPluginState(pluginId, "bootId", "") || "";
         if (!storedDays)
@@ -393,6 +401,9 @@ PluginComponent {
         for (const k of Object.keys(days))
             if (k < cutoff)
                 delete days[k];
+        for (const k of Object.keys(hours))
+            if (k < cutoff)
+                delete hours[k];
     }
 
     function saveState() {
@@ -404,6 +415,7 @@ PluginComponent {
             counters[n] = [lastCounters[n][0], lastCounters[n][1], (ifaceMap[n] || {}).key || ""];
         PluginService.savePluginState(pluginId, "version", 1);
         PluginService.savePluginState(pluginId, "days", deepCopy(days));
+        PluginService.savePluginState(pluginId, "hours", deepCopy(hours));
         PluginService.savePluginState(pluginId, "networks", deepCopy(networks));
         if (firstSampleDone) {
             PluginService.savePluginState(pluginId, "counters", counters);
@@ -419,6 +431,7 @@ PluginComponent {
             return;
         PluginService.setGlobalVar(pluginId, "store", {
             days: deepCopy(days),
+            hours: deepCopy(hours),
             networks: deepCopy(networks)
         });
     }
@@ -449,6 +462,7 @@ PluginComponent {
             active: active,
             day: currentDay,
             today: deepCopy(days[currentDay] || {}),
+            hours: deepCopy(hours[currentDay] || []),
             nets: deepCopy(networks)
         });
     }
@@ -466,6 +480,18 @@ PluginComponent {
                 iface: info.iface || "",
                 last: day
             };
+    }
+
+    function addHourly(day, hour, rx, tx) {
+        let h = hours[day];
+        if (!h || h.length !== 24) {
+            h = [];
+            for (let i = 0; i < 24; i++)
+                h.push([0, 0]);
+            hours[day] = h;
+        }
+        h[hour][0] += rx;
+        h[hour][1] += tx;
     }
 
     // nmcli -t escapes ':' and '\' with a backslash
@@ -708,6 +734,7 @@ PluginComponent {
                 if ((networks[key] || info).kind !== "sharing") {
                     dRx += rx;
                     dTx += tx;
+                    addHourly(currentDay, new Date(now).getHours(), rx, tx);
                 }
             }
         }

@@ -55,6 +55,13 @@ Column {
         }
     }
 
+    HourlyChart {
+        width: parent.width
+        host: tabRoot.host
+        hours: tabRoot.active ? (tabRoot.host.live.hours || []) : []
+        currentHour: new Date().getHours()
+    }
+
     StyledText {
         text: "By network"
         font.pixelSize: Theme.fontSizeSmall
