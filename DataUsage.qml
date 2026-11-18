@@ -459,6 +459,7 @@ PluginComponent {
     property var ifaceMap: ({})      // iface -> { counted, connected, key, label, kind, metered, primary }
     property var lastCounters: ({})  // iface -> [rx, tx]
     property var savedCounters: ({}) // from disk: iface -> [rx, tx, key]
+    property var capAlerts: ({})     // netKey -> { cycle, limit, level } last notified level
     property string savedBootId: ""
     property string bootId: ""
     property real uptime: 0
@@ -502,6 +503,7 @@ PluginComponent {
         days = deepCopy(storedDays || {}) || {};
         networks = deepCopy(PluginService.loadPluginState(pluginId, "networks", {})) || {};
         hours = deepCopy(PluginService.loadPluginState(pluginId, "hours", {})) || {};
+        capAlerts = deepCopy(PluginService.loadPluginState(pluginId, "capAlerts", {})) || {};
         savedCounters = deepCopy(PluginService.loadPluginState(pluginId, "counters", {})) || {};
         savedBootId = PluginService.loadPluginState(pluginId, "bootId", "") || "";
         if (!storedDays)
@@ -636,6 +638,48 @@ PluginComponent {
         }
         h[hour][0] += rx;
         h[hour][1] += tx;
+    }
+
+    // Notify once per cycle when a cap crosses 80% and again at 100%.
+    function checkCaps() {
+        if (!isLeader || !firstSampleDone)
+            return;
+        let changed = false;
+        for (const key in caps) {
+            const st = capStatus(key, days);
+            if (!st)
+                continue;
+            const prev = capAlerts[key];
+            const sameCycle = prev && prev.cycle === st.start && prev.limit === st.cap.limit;
+            const prevLevel = sameCycle ? prev.level : 0;
+            if (st.level > prevLevel)
+                notifyCap(st);
+            if (!sameCycle || st.level > prevLevel) {
+                capAlerts[key] = {
+                    cycle: st.start,
+                    limit: st.cap.limit,
+                    level: Math.max(st.level, prevLevel)
+                };
+                changed = true;
+            }
+        }
+        for (const k of Object.keys(capAlerts)) {
+            if (!caps[k]) {
+                delete capAlerts[k];
+                changed = true;
+            }
+        }
+        if (changed)
+            PluginService.savePluginState(pluginId, "capAlerts", deepCopy(capAlerts));
+    }
+
+    function notifyCap(st) {
+        const over = st.level >= 100;
+        const title = over ? "Data cap reached: " + st.label : st.label + ": " + Math.floor(st.pct * 100) + "% of data cap used";
+        const span = st.cap.period === "day" ? "today" : st.cap.period === "week" ? "this week" : "this billing cycle";
+        const resets = st.cap.period === "day" ? "Resets at midnight." : "Resets " + Qt.formatDate(st.endDate, "d MMM") + ".";
+        const body = fmtBytes(st.used) + " of " + fmtBytes(st.cap.limit) + " used " + span + ". " + resets;
+        Quickshell.execDetached(["notify-send", "-a", "Data Usage", "-u", over ? "critical" : "normal", "-i", "network-transmit-receive", title, body]);
     }
 
     // nmcli -t escapes ':' and '\' with a backslash
@@ -945,6 +989,15 @@ PluginComponent {
         running: root.isLeader
         onTriggered: if (root.dirty)
             root.saveState()
+    }
+
+    Timer {
+        id: capTimer
+        interval: 20000
+        repeat: true
+        triggeredOnStart: true
+        running: root.isLeader && root.firstSampleDone
+        onTriggered: root.checkCaps()
     }
 
     Timer {
