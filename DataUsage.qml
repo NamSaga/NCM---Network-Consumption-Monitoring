@@ -43,6 +43,7 @@ PluginComponent {
     property string expandedDay: ""
     property int netPeriod: 30            // 7 | 30 | 0 (all)
     property string editingKey: ""        // network whose editor is open
+    property bool confirmReset: false
 
     // ─────────────────────────── Formatting ───────────────────────────
     function fmtBytes(b) {
@@ -443,6 +444,84 @@ PluginComponent {
             if (r.total > m)
                 m = r.total;
         return m;
+    }
+
+    // ───────────────────────── Export / reset ─────────────────────────
+    function csvField(v) {
+        v = String(v);
+        return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+    }
+
+    function buildCsv() {
+        const d = allDays();
+        const out = ["date,network,type,download_bytes,upload_bytes,total_bytes,counted_in_total"];
+        for (const day of Object.keys(d).sort()) {
+            for (const key in d[day]) {
+                const e = d[day][key];
+                if (e[0] + e[1] <= 0)
+                    continue;
+                const n = netInfo(key);
+                out.push([day, csvField(n.label), n.kind, e[0], e[1], e[0] + e[1], n.kind === "sharing" ? "no" : "yes"].join(","));
+            }
+        }
+        return out.join("\n") + "\n";
+    }
+
+    function exportCsv() {
+        if (exportProc.running)
+            return;
+        exportProc.input = buildCsv();
+        exportProc.stdinEnabled = true;
+        exportProc.running = true;
+    }
+
+    // Any instance can ask; the leader owns the data and performs it.
+    function requestReset() {
+        if (!confirmReset) {
+            confirmReset = true;
+            resetConfirmTimer.restart();
+            return;
+        }
+        confirmReset = false;
+        PluginService.setGlobalVar(pluginId, "resetRequest", Date.now());
+    }
+
+    readonly property real resetRequest: g.resetRequest || 0
+    property real handledReset: 0
+    onResetRequestChanged: {
+        if (!isLeader || resetRequest <= handledReset || !stateLoaded)
+            return;
+        handledReset = resetRequest;
+        days = {};
+        hours = {};
+        capAlerts = {};
+        saveState();
+        publishLive();
+        ToastService.showInfo("Data usage history cleared");
+    }
+
+    Timer {
+        id: resetConfirmTimer
+        interval: 4000
+        onTriggered: root.confirmReset = false
+    }
+
+    Process {
+        id: exportProc
+        property string input: ""
+        command: ["sh", "-c", "dir=$(xdg-user-dir DOWNLOAD 2>/dev/null); [ -d \"$dir\" ] || dir=\"$HOME\"; f=\"$dir/data-usage-$(date +%F).csv\"; cat > \"$f\" && printf '%s' \"$f\""]
+        onStarted: {
+            write(input);
+            stdinEnabled = false;
+        }
+        stdout: StdioCollector {
+            onStreamFinished: {
+                if (text)
+                    ToastService.showInfo("Exported data usage", text);
+                else
+                    ToastService.showError("Could not export data usage");
+            }
+        }
     }
 
     // ═════════════════════════ Leader: data collection ═════════════════════════
@@ -1323,27 +1402,50 @@ PluginComponent {
                     x: Theme.spacingM
                 }
 
-                // ── Legend ──
-                Row {
+                // ── Footer: legend + actions ──
+                Item {
+                    width: parent.width - Theme.spacingM * 2
                     x: Theme.spacingM
-                    spacing: Theme.spacingM
-                    Repeater {
-                        model: [["Download", root.downColor], ["Upload", root.upColor]]
-                        delegate: Row {
-                            required property var modelData
-                            spacing: 4
-                            Rectangle {
-                                width: 10
-                                height: 10
-                                radius: 5
-                                color: modelData[1]
-                                anchors.verticalCenter: parent.verticalCenter
+                    height: 28
+
+                    Row {
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Theme.spacingM
+                        Repeater {
+                            model: [["Download", root.downColor], ["Upload", root.upColor]]
+                            delegate: Row {
+                                required property var modelData
+                                spacing: 4
+                                Rectangle {
+                                    width: 10
+                                    height: 10
+                                    radius: 5
+                                    color: modelData[1]
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                StyledText {
+                                    text: modelData[0]
+                                    font.pixelSize: Theme.fontSizeSmall - 2
+                                    color: Theme.surfaceVariantText
+                                }
                             }
-                            StyledText {
-                                text: modelData[0]
-                                font.pixelSize: Theme.fontSizeSmall - 2
-                                color: Theme.surfaceVariantText
-                            }
+                        }
+                    }
+
+                    Row {
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Theme.spacingXS
+                        Chip {
+                            icon: "file_download"
+                            label: "CSV"
+                            onClicked: root.exportCsv()
+                        }
+                        Chip {
+                            icon: "delete_history"
+                            label: root.confirmReset ? "Click again to clear" : "Reset"
+                            color: root.confirmReset ? Theme.withAlpha(Theme.error, 0.25) : Theme.withAlpha(Theme.surfaceVariantText, 0.1)
+                            onClicked: root.requestReset()
                         }
                     }
                 }
