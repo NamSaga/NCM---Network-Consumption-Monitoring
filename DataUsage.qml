@@ -19,6 +19,7 @@ PluginComponent {
     readonly property int retentionDays: Math.max(7, Number(pluginData.retentionDays) || 90)
     readonly property var aliases: pluginData.aliases || ({})   // netKey -> custom name
     readonly property var caps: pluginData.caps || ({})         // netKey | "__all__" -> { limit, period, resetDay }
+    readonly property int speedBudgetMb: Math.max(20, Number(pluginData.speedTestBudget) || 300)
 
     // ─────────────────── Shared view state (all bar instances) ───────────────────
     // One instance (the "leader") samples counters and publishes into PluginService
@@ -39,7 +40,7 @@ PluginComponent {
 
     // UI state
     property string tab: "today"
-    readonly property var tabs: [["today", "Today"], ["history", "History"], ["networks", "Networks"]]
+    readonly property var tabs: [["today", "Today"], ["history", "History"], ["networks", "Networks"], ["speed", "Speed"]]
     property string expandedDay: ""
     property int netPeriod: 30            // 7 | 30 | 0 (all)
     property string editingKey: ""        // network whose editor is open
@@ -78,6 +79,14 @@ PluginComponent {
             i++;
         }
         return (i === 0 ? v.toFixed(0) : v.toFixed(1)) + " " + u[i];
+    }
+
+    // Speed test results are always shown in Mbps, like fast.com
+    function fmtMbps(bps) {
+        const m = Math.max(0, bps || 0) * 8 / 1e6;
+        if (m >= 1000)
+            return (m / 1000).toFixed(2) + " Gbps";
+        return (m < 10 ? m.toFixed(1) : m.toFixed(0)) + " Mbps";
     }
 
     // Narrow form for vertical bars: "1.2M", "340K"
@@ -524,6 +533,144 @@ PluginComponent {
         }
     }
 
+    // ───────────────────────────── Speed test ─────────────────────────────
+    // Requested from any instance, run by the leader, shown everywhere.
+    readonly property var speed: g.speed || ({
+            running: false,
+            history: []
+        })
+    readonly property var speedRequest: g.speedRequest || null
+    property real handledSpeedRequest: 0
+    property var speedState: ({})
+    property var speedHistory: []
+    readonly property string speedScript: decodeURIComponent(Qt.resolvedUrl("scripts/speedtest.sh").toString().replace(/^file:\/\//, ""))
+
+    function requestSpeedTest(action) {
+        PluginService.setGlobalVar(pluginId, "speedRequest", {
+            at: Date.now(),
+            action: action
+        });
+    }
+
+    onSpeedRequestChanged: {
+        if (!isLeader || !speedRequest || speedRequest.at <= handledSpeedRequest)
+            return;
+        handledSpeedRequest = speedRequest.at;
+        if (speedRequest.action === "start" && !speedProc.running)
+            startSpeedTest();
+        else if (speedRequest.action === "cancel" && speedProc.running) {
+            speedState.cancelled = true;
+            speedProc.signal(15);
+        }
+    }
+
+    function startSpeedTest() {
+        const net = primaryConn;
+        speedState = {
+            running: true,
+            phase: "starting",
+            ping: -1,
+            jitter: -1,
+            down: -1,
+            up: -1,
+            live: 0,
+            usedDown: 0,
+            usedUp: 0,
+            isp: "",
+            server: "",
+            error: "",
+            network: net ? labelFor(net.key, net.label) : "",
+            netKey: net ? net.key : "",
+            startedAt: Date.now()
+        };
+        const budget = speedBudgetMb * 1e6;
+        speedProc.command = ["sh", speedScript, "10", "8", String(budget), String(Math.round(budget / 3))];
+        speedProc.running = true;
+        publishSpeed();
+    }
+
+    function onSpeedLine(line) {
+        const bar = line.indexOf("|");
+        const tag = bar < 0 ? line : line.slice(0, bar);
+        const p = bar < 0 ? [] : line.slice(bar + 1).split("|");
+        const st = speedState;
+        switch (tag) {
+        case "META":
+            try {
+                const m = JSON.parse(line.slice(bar + 1));
+                st.isp = m.asOrganization || "";
+                const c = m.colo || {};
+                st.server = typeof c === "object" ? (c.city ? c.city + " (" + c.iata + ")" : c.iata || "") : String(c);
+            } catch (e) {}
+            break;
+        case "PHASE":
+            st.phase = p[0];
+            st.live = 0;
+            break;
+        case "PING":
+            st.ping = Number(p[0]);
+            st.jitter = Number(p[1]);
+            break;
+        case "DLP":
+        case "ULP":
+            st.live = Number(p[0]) || 0;
+            break;
+        case "DL":
+            st.down = Number(p[0]) || 0;
+            st.usedDown = Number(p[1]) || 0;
+            break;
+        case "UL":
+            st.up = Number(p[0]) || 0;
+            st.usedUp = Number(p[1]) || 0;
+            break;
+        case "DONE":
+            st.phase = "done";
+            break;
+        case "ERR":
+            st.error = p.join("|");
+            break;
+        }
+        publishSpeed();
+    }
+
+    function finishSpeedTest() {
+        const st = speedState;
+        st.running = false;
+        if (st.cancelled) {
+            st.phase = "cancelled";
+        } else if (st.phase === "done") {
+            speedHistory = [{
+                    at: st.startedAt,
+                    network: st.network,
+                    netKey: st.netKey,
+                    ping: st.ping,
+                    down: st.down,
+                    up: st.up,
+                    used: st.usedDown + st.usedUp
+                }].concat(speedHistory).slice(0, 20);
+            PluginService.savePluginState(pluginId, "speedHistory", deepCopy(speedHistory));
+        } else if (!st.error) {
+            st.error = "The test stopped unexpectedly";
+        }
+        publishSpeed();
+    }
+
+    function publishSpeed() {
+        if (!pluginId)
+            return;
+        PluginService.setGlobalVar(pluginId, "speed", Object.assign({}, speedState, {
+            history: speedHistory
+        }));
+    }
+
+    Process {
+        id: speedProc
+        stdout: SplitParser {
+            onRead: line => root.onSpeedLine(line)
+        }
+        onExited: root.finishSpeedTest()
+    }
+
     // ═════════════════════════ Leader: data collection ═════════════════════════
     readonly property string instanceId: Math.random().toString(36).slice(2, 10)
     property bool isLeader: false
@@ -573,6 +720,7 @@ PluginComponent {
         loadState();
         publishLive();
         publishStore();
+        publishSpeed();
         metaProc.running = true;
         monitorProc.running = true;
     }
@@ -583,6 +731,7 @@ PluginComponent {
         networks = deepCopy(PluginService.loadPluginState(pluginId, "networks", {})) || {};
         hours = deepCopy(PluginService.loadPluginState(pluginId, "hours", {})) || {};
         capAlerts = deepCopy(PluginService.loadPluginState(pluginId, "capAlerts", {})) || {};
+        speedHistory = deepCopy(PluginService.loadPluginState(pluginId, "speedHistory", [])) || [];
         savedCounters = deepCopy(PluginService.loadPluginState(pluginId, "counters", {})) || {};
         savedBootId = PluginService.loadPluginState(pluginId, "bootId", "") || "";
         if (!storedDays)
@@ -1122,6 +1271,8 @@ PluginComponent {
     }
 
     Component.onDestruction: {
+        if (speedProc.running)
+            speedProc.signal(15);
         if (isLeader) {
             saveState();
             PluginService.setGlobalVar(pluginId, "live", Object.assign({}, live, {
@@ -1398,6 +1549,13 @@ PluginComponent {
                 NetworksTab {
                     host: root
                     visible: root.tab === "networks"
+                    width: parent.width - Theme.spacingM * 2
+                    x: Theme.spacingM
+                }
+
+                SpeedTab {
+                    host: root
+                    visible: root.tab === "speed"
                     width: parent.width - Theme.spacingM * 2
                     x: Theme.spacingM
                 }

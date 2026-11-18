@@ -68,6 +68,16 @@ PluginSettings {
     }
 
     SliderSetting {
+        settingKey: "speedTestBudget"
+        label: "Speed test data limit"
+        description: "Maximum download per speed test; upload is limited to a third of this"
+        defaultValue: 300
+        minimum: 50
+        maximum: 1000
+        unit: "MB"
+    }
+
+    SliderSetting {
         settingKey: "retentionDays"
         label: "Keep history for"
         description: "Older days are deleted automatically"
