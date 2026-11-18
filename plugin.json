@@ -1,0 +1,12 @@
+{
+    "id": "dataUsage",
+    "name": "Data Usage",
+    "description": "Daily download/upload tracking per network (Wi-Fi, Ethernet, USB tethering, mobile data) with live speed in DankBar",
+    "version": "1.0.0",
+    "author": "saga",
+    "icon": "data_usage",
+    "type": "widget",
+    "component": "./DataUsage.qml",
+    "settings": "./DataUsageSettings.qml",
+    "permissions": ["settings_read", "settings_write", "process"]
+}
