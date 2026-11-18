@@ -55,6 +55,22 @@ Column {
         }
     }
 
+    Column {
+        visible: tabRoot.host.activeCaps.length > 0
+        width: parent.width
+        spacing: Theme.spacingS
+        Repeater {
+            model: tabRoot.active ? tabRoot.host.activeCaps : []
+            delegate: CapBar {
+                required property var modelData
+                width: parent.width
+                host: tabRoot.host
+                status: modelData
+                showLabel: true
+            }
+        }
+    }
+
     HourlyChart {
         width: parent.width
         host: tabRoot.host

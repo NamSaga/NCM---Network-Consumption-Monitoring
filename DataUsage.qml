@@ -18,6 +18,7 @@ PluginComponent {
     readonly property bool bitsSpeed: (pluginData.speedUnit || "bytes") === "bits"
     readonly property int retentionDays: Math.max(7, Number(pluginData.retentionDays) || 90)
     readonly property var aliases: pluginData.aliases || ({})   // netKey -> custom name
+    readonly property var caps: pluginData.caps || ({})         // netKey | "__all__" -> { limit, period, resetDay }
 
     // ─────────────────── Shared view state (all bar instances) ───────────────────
     // One instance (the "leader") samples counters and publishes into PluginService
@@ -110,6 +111,8 @@ PluginComponent {
 
     function kindIcon(k) {
         switch (k) {
+        case "all":
+            return "public";
         case "wifi":
             return "wifi";
         case "ethernet":
@@ -131,6 +134,8 @@ PluginComponent {
 
     function kindName(k) {
         switch (k) {
+        case "all":
+            return "Everything except hotspot sharing";
         case "wifi":
             return "Wi-Fi";
         case "ethernet":
@@ -319,6 +324,119 @@ PluginComponent {
         return rows;
     }
 
+    // ───────────────────────────── Data caps ─────────────────────────────
+    function daysInMonth(y, m) {
+        return new Date(y, m + 1, 0).getDate();
+    }
+
+    // Current billing cycle for a cap: { start, end, daysLeft } (end is exclusive)
+    function cycleBounds(cap, now) {
+        now = now || new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        let start, end;
+        if (cap.period === "day") {
+            start = today;
+            end = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+        } else if (cap.period === "week") {
+            const dow = (today.getDay() + 6) % 7; // Monday = 0
+            start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - dow);
+            end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 7);
+        } else {
+            const d = Math.max(1, Math.min(31, cap.resetDay || 1));
+            let y = today.getFullYear(), m = today.getMonth();
+            if (today.getDate() < Math.min(d, daysInMonth(y, m))) {
+                m--;
+                if (m < 0) {
+                    m = 11;
+                    y--;
+                }
+            }
+            start = new Date(y, m, Math.min(d, daysInMonth(y, m)));
+            let ny = y, nm = m + 1;
+            if (nm > 11) {
+                nm = 0;
+                ny++;
+            }
+            end = new Date(ny, nm, Math.min(d, daysInMonth(ny, nm)));
+        }
+        return {
+            start: dateKey(start),
+            end: dateKey(end),
+            endDate: end,
+            daysLeft: Math.round((end - today) / 86400000)
+        };
+    }
+
+    function usedSince(daysObj, key, startKey) {
+        let t = 0;
+        for (const d in daysObj) {
+            if (d < startKey)
+                continue;
+            const day = daysObj[d];
+            if (key === "__all__") {
+                const s = sumDay(day);
+                t += s.rx + s.tx;
+            } else if (day[key]) {
+                t += day[key][0] + day[key][1];
+            }
+        }
+        return t;
+    }
+
+    function capStatus(key, daysObj) {
+        const cap = caps[key];
+        if (!cap || !(cap.limit > 0))
+            return null;
+        const b = cycleBounds(cap);
+        const used = usedSince(daysObj || allDays(), key, b.start);
+        const pct = used / cap.limit;
+        return {
+            key: key,
+            label: key === "__all__" ? "All networks" : netInfo(key).label,
+            cap: cap,
+            used: used,
+            pct: pct,
+            level: pct >= 1 ? 100 : pct >= 0.8 ? 80 : 0,
+            start: b.start,
+            end: b.end,
+            endDate: b.endDate,
+            daysLeft: b.daysLeft
+        };
+    }
+
+    function setCap(key, cap) {
+        const c = Object.assign({}, caps);
+        if (cap && cap.limit > 0)
+            c[key] = cap;
+        else
+            delete c[key];
+        PluginService.savePluginData(pluginId, "caps", c);
+    }
+
+    function periodName(p) {
+        return p === "day" ? "Daily" : p === "week" ? "Weekly" : "Monthly";
+    }
+
+    // Caps that matter right now: the overall cap plus caps on active networks.
+    readonly property var activeCaps: {
+        const keys = Object.keys(caps);
+        if (keys.length === 0)
+            return [];
+        const activeKeys = activeList.filter(a => a.kind !== "sharing").map(a => a.key);
+        const d = allDays();
+        const out = [];
+        for (const k of keys) {
+            if (k !== "__all__" && activeKeys.indexOf(k) < 0)
+                continue;
+            const st = capStatus(k, d);
+            if (st)
+                out.push(st);
+        }
+        out.sort((a, b) => b.pct - a.pct);
+        return out;
+    }
+    readonly property int capLevel: activeCaps.length > 0 ? activeCaps[0].level : 0
+
     function maxOf(rows) {
         let m = 1;
         for (const r of rows)
@@ -422,7 +540,7 @@ PluginComponent {
 
     function pruneDays() {
         const c = new Date();
-        c.setDate(c.getDate() - retentionDays);
+        c.setDate(c.getDate() - Math.max(retentionDays, 32)); // keep a full monthly cap cycle
         const cutoff = dateKey(c);
         for (const k of Object.keys(days))
             if (k < cutoff)
@@ -883,7 +1001,15 @@ PluginComponent {
 
     // ═════════════════════════════ Bar pills ═════════════════════════════
     readonly property string pillIcon: !online ? "cloud_off" : kindIcon(primaryConn ? primaryConn.kind : "other")
-    readonly property color pillIconColor: !online ? Theme.surfaceVariantText : (primaryConn && primaryConn.metered) ? Theme.warning : Theme.surfaceText
+    readonly property color pillIconColor: {
+        if (!online)
+            return Theme.surfaceVariantText;
+        if (capLevel >= 100)
+            return Theme.error;
+        if (capLevel >= 80 || (primaryConn && primaryConn.metered))
+            return Theme.warning;
+        return Theme.surfaceText;
+    }
     readonly property color downColor: Theme.primary
     readonly property color upColor: Theme.error
 
