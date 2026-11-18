@@ -17,6 +17,7 @@ PluginComponent {
     readonly property bool decimalUnits: (pluginData.unitBase || "decimal") === "decimal"
     readonly property bool bitsSpeed: (pluginData.speedUnit || "bytes") === "bits"
     readonly property int retentionDays: Math.max(7, Number(pluginData.retentionDays) || 90)
+    readonly property var aliases: pluginData.aliases || ({})   // netKey -> custom name
 
     // ─────────────────── Shared view state (all bar instances) ───────────────────
     // One instance (the "leader") samples counters and publishes into PluginService
@@ -40,6 +41,7 @@ PluginComponent {
     readonly property var tabs: [["today", "Today"], ["history", "History"], ["networks", "Networks"]]
     property string expandedDay: ""
     property int netPeriod: 30            // 7 | 30 | 0 (all)
+    property string editingKey: ""        // network whose editor is open
 
     // ─────────────────────────── Formatting ───────────────────────────
     function fmtBytes(b) {
@@ -149,10 +151,32 @@ PluginComponent {
     }
 
     function netInfo(key) {
-        return nets[key] || {
+        const n = nets[key] || {
             label: key,
             kind: "other"
         };
+        if (!aliases[key])
+            return n;
+        return Object.assign({}, n, {
+            label: aliases[key],
+            origLabel: n.label
+        });
+    }
+
+    function labelFor(key, fallback) {
+        return aliases[key] || fallback || netInfo(key).label;
+    }
+
+    // Shared through plugin settings, so every bar instance sees the change.
+    function setAlias(key, name) {
+        const a = Object.assign({}, aliases);
+        const orig = (nets[key] || {}).label || "";
+        name = (name || "").trim();
+        if (name && name !== orig)
+            a[key] = name;
+        else
+            delete a[key];
+        PluginService.savePluginData(pluginId, "aliases", a);
     }
 
     // ─────────────────────────── Aggregation ───────────────────────────
@@ -195,6 +219,7 @@ PluginComponent {
             rows.push({
                 key: k,
                 label: n.label,
+                origLabel: n.origLabel || "",
                 kind: n.kind,
                 metered: !!n.metered,
                 rx: e[0],
@@ -284,6 +309,7 @@ PluginComponent {
         const rows = Object.values(acc).map(a => {
             const n = netInfo(a.key);
             a.label = n.label;
+            a.origLabel = n.origLabel || "";
             a.kind = n.kind;
             a.metered = !!n.metered;
             a.total = a.rx + a.tx;
@@ -1016,7 +1042,7 @@ PluginComponent {
                                         anchors.verticalCenter: parent.verticalCenter
                                     }
                                     StyledText {
-                                        text: modelData.label + (modelData.metered ? " · metered" : "")
+                                        text: root.labelFor(modelData.key, modelData.label) + (modelData.metered ? " · metered" : "")
                                         font.pixelSize: Theme.fontSizeSmall - 1
                                         font.weight: modelData.primary ? Font.Bold : Font.Normal
                                         color: Theme.surfaceText

@@ -34,7 +34,7 @@ Column {
         Column {
             id: netCol
             width: netFlick.width
-            spacing: Theme.spacingM
+            spacing: 2
             readonly property var rows: tabRoot.active ? tabRoot.host.networkRows(tabRoot.host.netPeriod) : []
             readonly property real max: tabRoot.host.maxOf(rows)
 
@@ -46,7 +46,7 @@ Column {
             }
             Repeater {
                 model: netCol.rows
-                delegate: NetLine {
+                delegate: NetworkCard {
                     required property var modelData
                     host: tabRoot.host
                     row: modelData
