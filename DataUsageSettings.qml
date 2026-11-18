@@ -67,6 +67,13 @@ PluginSettings {
         defaultValue: "bytes"
     }
 
+    ToggleSetting {
+        settingKey: "trackApps"
+        label: "Track usage per app"
+        description: "Samples your TCP connections with ss to split usage by app. UDP/QUIC traffic shows as not attributed."
+        defaultValue: true
+    }
+
     SliderSetting {
         settingKey: "speedTestBudget"
         label: "Speed test data limit"

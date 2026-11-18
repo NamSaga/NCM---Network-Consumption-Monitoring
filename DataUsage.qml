@@ -20,6 +20,7 @@ PluginComponent {
     readonly property var aliases: pluginData.aliases || ({})   // netKey -> custom name
     readonly property var caps: pluginData.caps || ({})         // netKey | "__all__" -> { limit, period, resetDay }
     readonly property int speedBudgetMb: Math.max(20, Number(pluginData.speedTestBudget) || 300)
+    readonly property bool trackApps: pluginData.trackApps !== false
 
     // ─────────────────── Shared view state (all bar instances) ───────────────────
     // One instance (the "leader") samples counters and publishes into PluginService
@@ -40,7 +41,8 @@ PluginComponent {
 
     // UI state
     property string tab: "today"
-    readonly property var tabs: [["today", "Today"], ["history", "History"], ["networks", "Networks"], ["speed", "Speed"]]
+    readonly property var tabs: [["today", "Today"], ["history", "History"], ["networks", "Networks"], ["apps", "Apps"], ["speed", "Speed"]]
+    property int appPeriod: 1             // 1 (today) | 7 | 30
     property string expandedDay: ""
     property int netPeriod: 30            // 7 | 30 | 0 (all)
     property string editingKey: ""        // network whose editor is open
@@ -447,6 +449,66 @@ PluginComponent {
     }
     readonly property int capLevel: activeCaps.length > 0 ? activeCaps[0].level : 0
 
+    // Desktop entry for a process name: exact lookup, then by executable or id.
+    property var _entryCache: ({})
+    function appEntry(name) {
+        if (_entryCache[name])
+            return _entryCache[name];
+        let e = DesktopEntries.heuristicLookup(name);
+        if (!e) {
+            const n = name.toLowerCase();
+            const list = DesktopEntries.applications.values;
+            e = list.find(x => (x.execString || "").toLowerCase().split(/[\s\/]+/).indexOf(n) >= 0) || (n.length >= 4 ? list.find(x => (x.id || "").toLowerCase().indexOf(n) >= 0) : null) || null;
+        }
+        if (e)
+            _entryCache[name] = e; // misses are retried: entries load asynchronously
+        return e;
+    }
+
+    // Per-app totals for the last `period` days, plus what TCP sampling could not attribute.
+    function appRows(period) {
+        const all = Object.assign({}, store.apps || {});
+        if (live.day)
+            all[live.day] = live.apps || {};
+        const c = new Date();
+        c.setDate(c.getDate() - (period - 1));
+        const cutoff = dateKey(c);
+        const acc = {};
+        let appTotal = 0, consumption = 0;
+        const d = allDays();
+        for (const day in all) {
+            if (day < cutoff)
+                continue;
+            for (const name in all[day]) {
+                const e = all[day][name];
+                const a = acc[name] || (acc[name] = {
+                        name: name,
+                        rx: 0,
+                        tx: 0
+                    });
+                a.rx += e[0];
+                a.tx += e[1];
+                appTotal += e[0] + e[1];
+            }
+            // only compare against days (and the part of the first day) with app tracking
+            const s = sumDay(d[day] || {});
+            consumption += s.rx + s.tx;
+            const st = store.appStart;
+            if (st && st.day === day)
+                consumption -= st.base || 0;
+        }
+        const rows = Object.values(acc).map(a => {
+            a.total = a.rx + a.tx;
+            return a;
+        }).filter(a => a.total > 0);
+        rows.sort((a, b) => b.total - a.total);
+        return {
+            rows: rows,
+            unattributed: Math.max(0, consumption - appTotal),
+            consumption: consumption
+        };
+    }
+
     function maxOf(rows) {
         let m = 1;
         for (const r of rows)
@@ -503,6 +565,7 @@ PluginComponent {
         handledReset = resetRequest;
         days = {};
         hours = {};
+        apps = {};
         capAlerts = {};
         saveState();
         publishLive();
@@ -681,6 +744,10 @@ PluginComponent {
 
     property var days: ({})          // "yyyy-MM-dd" -> { netKey: [rx, tx] }
     property var hours: ({})         // "yyyy-MM-dd" -> [[rx, tx] × 24], consumption only
+    property var apps: ({})          // "yyyy-MM-dd" -> { appName: [rx, tx] } (TCP only)
+    property var appSockets: ({})    // socket key -> [rx, tx, name]
+    property var appStart: null      // { day, base }: consumption before app tracking started
+    property bool appFirstDone: false
     property var networks: ({})      // netKey -> { label, kind, metered, iface, last }
     property var ifaceMap: ({})      // iface -> { counted, connected, key, label, kind, metered, primary }
     property var lastCounters: ({})  // iface -> [rx, tx]
@@ -731,6 +798,24 @@ PluginComponent {
         networks = deepCopy(PluginService.loadPluginState(pluginId, "networks", {})) || {};
         hours = deepCopy(PluginService.loadPluginState(pluginId, "hours", {})) || {};
         capAlerts = deepCopy(PluginService.loadPluginState(pluginId, "capAlerts", {})) || {};
+        apps = deepCopy(PluginService.loadPluginState(pluginId, "apps", {})) || {};
+        appStart = deepCopy(PluginService.loadPluginState(pluginId, "appStart", null));
+        if (!appStart) {
+            // remember how much of today was used before per-app tracking began
+            const today = dateKey();
+            let base = 0;
+            const d = days[today] || {};
+            for (const k in d)
+                if ((networks[k] || {}).kind !== "sharing")
+                    base += d[k][0] + d[k][1];
+            appStart = {
+                day: today,
+                base: base
+            };
+            PluginService.savePluginState(pluginId, "appStart", appStart);
+        }
+        appSockets = {};
+        appFirstDone = false;
         speedHistory = deepCopy(PluginService.loadPluginState(pluginId, "speedHistory", [])) || [];
         savedCounters = deepCopy(PluginService.loadPluginState(pluginId, "counters", {})) || {};
         savedBootId = PluginService.loadPluginState(pluginId, "bootId", "") || "";
@@ -778,6 +863,9 @@ PluginComponent {
         for (const k of Object.keys(hours))
             if (k < cutoff)
                 delete hours[k];
+        for (const k of Object.keys(apps))
+            if (k < cutoff)
+                delete apps[k];
     }
 
     function saveState() {
@@ -790,6 +878,7 @@ PluginComponent {
         PluginService.savePluginState(pluginId, "version", 1);
         PluginService.savePluginState(pluginId, "days", deepCopy(days));
         PluginService.savePluginState(pluginId, "hours", deepCopy(hours));
+        PluginService.savePluginState(pluginId, "apps", deepCopy(apps));
         PluginService.savePluginState(pluginId, "networks", deepCopy(networks));
         if (firstSampleDone) {
             PluginService.savePluginState(pluginId, "counters", counters);
@@ -806,6 +895,8 @@ PluginComponent {
         PluginService.setGlobalVar(pluginId, "store", {
             days: deepCopy(days),
             hours: deepCopy(hours),
+            apps: deepCopy(apps),
+            appStart: appStart,
             networks: deepCopy(networks)
         });
     }
@@ -837,6 +928,7 @@ PluginComponent {
             day: currentDay,
             today: deepCopy(days[currentDay] || {}),
             hours: deepCopy(hours[currentDay] || []),
+            apps: deepCopy(apps[currentDay] || {}),
             nets: deepCopy(networks)
         });
     }
@@ -908,6 +1000,77 @@ PluginComponent {
         const resets = st.cap.period === "day" ? "Resets at midnight." : "Resets " + Qt.formatDate(st.endDate, "d MMM") + ".";
         const body = fmtBytes(st.used) + " of " + fmtBytes(st.cap.limit) + " used " + span + ". " + resets;
         Quickshell.execDetached(["notify-send", "-a", "Data Usage", "-u", over ? "critical" : "normal", "-i", "network-transmit-receive", title, body]);
+    }
+
+    // ── Per-app usage (TCP sockets via ss) ──
+    readonly property var appAliases: ({
+            "steamwebhelper": "steam",
+            "Socket Process": "firefox",
+            "Isolated Web Co": "firefox",
+            "firefox-bin": "firefox",
+            "brave-browser-s": "brave",
+            "chrome_crashpad": "chrome"
+        })
+
+    function isLoopback(addr) {
+        return addr.startsWith("127.") || addr.startsWith("[::1]") || addr.startsWith("[::ffff:127.");
+    }
+
+    function appNameFrom(header) {
+        const u = header.match(/users:\(\("([^"]+)"/);
+        if (u)
+            return appAliases[u[1]] || u[1];
+        const c = header.match(/cgroup:(\S+)/);
+        if (c) {
+            const seg = c[1].split("/").pop();
+            if (/\.service$/.test(seg))
+                return seg.replace(/\.service$/, "").replace(/@.*$/, "");
+        }
+        return "System";
+    }
+
+    function onSockets(lines) {
+        const now = Date.now();
+        const day = dateKey(new Date(now));
+        const seen = {};
+        let header = null;
+        for (const line of lines) {
+            if (!/^\s/.test(line)) {
+                header = line;
+                continue;
+            }
+            if (!header)
+                continue;
+            const f = header.trim().split(/\s+/);
+            const local = f[3] || "", peer = f[4] || "";
+            const hdr = header;
+            header = null;
+            if (isLoopback(local) || isLoopback(peer))
+                continue;
+            const rxm = line.match(/bytes_received:(\d+)/);
+            const txm = line.match(/bytes_sent:(\d+)/);
+            const rx = rxm ? Number(rxm[1]) : 0, tx = txm ? Number(txm[1]) : 0;
+            const key = local + ">" + peer;
+            const prev = appSockets[key];
+            const name = prev ? prev[2] : appNameFrom(hdr);
+            seen[key] = [rx, tx, name];
+            let drx = 0, dtx = 0;
+            if (prev) {
+                drx = rx >= prev[0] ? rx - prev[0] : rx;
+                dtx = tx >= prev[1] ? tx - prev[1] : tx;
+            } else if (appFirstDone) {
+                drx = rx; // socket opened since the last sample
+                dtx = tx;
+            }
+            if (drx > 0 || dtx > 0) {
+                const b = apps[day] || (apps[day] = {});
+                const e = b[name] || (b[name] = [0, 0]);
+                e[0] += drx;
+                e[1] += dtx;
+            }
+        }
+        appSockets = seen;
+        appFirstDone = true;
     }
 
     // nmcli -t escapes ':' and '\' with a backslash
@@ -1217,6 +1380,27 @@ PluginComponent {
         running: root.isLeader
         onTriggered: if (root.dirty)
             root.saveState()
+    }
+
+    Timer {
+        id: appTimer
+        interval: Math.max(3, root.updateInterval) * 1000
+        repeat: true
+        triggeredOnStart: true
+        running: root.isLeader && root.trackApps
+        onTriggered: appProc.running = true
+    }
+
+    Process {
+        id: appProc
+        property var buf: []
+        command: ["ss", "-tinpHe"]
+        onStarted: buf = []
+        stdout: SplitParser {
+            onRead: line => appProc.buf.push(line)
+        }
+        onExited: if (root.isLeader)
+            root.onSockets(buf)
     }
 
     Timer {
@@ -1549,6 +1733,13 @@ PluginComponent {
                 NetworksTab {
                     host: root
                     visible: root.tab === "networks"
+                    width: parent.width - Theme.spacingM * 2
+                    x: Theme.spacingM
+                }
+
+                AppsTab {
+                    host: root
+                    visible: root.tab === "apps"
                     width: parent.width - Theme.spacingM * 2
                     x: Theme.spacingM
                 }
