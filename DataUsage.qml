@@ -831,7 +831,7 @@ PluginComponent {
     readonly property string pillIcon: !online ? "cloud_off" : kindIcon(primaryConn ? primaryConn.kind : "other")
     readonly property color pillIconColor: !online ? Theme.surfaceVariantText : (primaryConn && primaryConn.metered) ? Theme.warning : Theme.surfaceText
     readonly property color downColor: Theme.primary
-    readonly property color upColor: Theme.tertiary
+    readonly property color upColor: Theme.error
 
     horizontalBarPill: Component {
         Row {
