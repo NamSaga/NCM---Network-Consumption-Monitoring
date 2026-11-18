@@ -36,7 +36,8 @@ PluginComponent {
     readonly property real todayTotal: todayTotals.rx + todayTotals.tx
 
     // UI state
-    property string tab: "today"          // today | history | networks
+    property string tab: "today"
+    readonly property var tabs: [["today", "Today"], ["history", "History"], ["networks", "Networks"]]
     property string expandedDay: ""
     property int netPeriod: 30            // 7 | 30 | 0 (all)
 
@@ -932,193 +933,6 @@ PluginComponent {
     }
 
     // ═════════════════════════════ Popout ═════════════════════════════
-    // Two-tone bar: download segment then upload segment, scaled to `max`.
-    component UsageBar: Item {
-        id: ub
-        property real rx: 0
-        property real tx: 0
-        property real max: 1
-        property real barOpacity: 1
-        readonly property real full: width * Math.min(1, (rx + tx) / Math.max(1, max))
-        readonly property real rxWidth: full * (rx / Math.max(1, rx + tx))
-        height: 6
-
-        Rectangle {
-            anchors.fill: parent
-            radius: height / 2
-            color: Theme.withAlpha(Theme.surfaceVariantText, 0.12)
-        }
-        Rectangle {
-            visible: ub.tx > 0
-            height: parent.height
-            width: ub.full
-            radius: height / 2
-            opacity: ub.barOpacity
-            color: root.upColor
-        }
-        Rectangle {
-            visible: ub.rx > 0
-            height: parent.height
-            width: Math.max(ub.rxWidth, ub.tx > 0 ? 0 : 2)
-            radius: height / 2
-            opacity: ub.barOpacity
-            color: root.downColor
-        }
-    }
-
-    component Chip: Rectangle {
-        id: chip
-        property string label: ""
-        property bool selected: false
-        signal clicked
-        height: 28
-        width: chipText.implicitWidth + Theme.spacingM * 2
-        radius: height / 2
-        color: selected ? Theme.primary : Theme.withAlpha(Theme.surfaceVariantText, chipMouse.containsMouse ? 0.18 : 0.1)
-        StyledText {
-            id: chipText
-            anchors.centerIn: parent
-            text: chip.label
-            font.pixelSize: Theme.fontSizeSmall
-            font.weight: chip.selected ? Font.Bold : Font.Normal
-            color: chip.selected ? Theme.onPrimary : Theme.surfaceText
-        }
-        MouseArea {
-            id: chipMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: chip.clicked()
-        }
-    }
-
-    // A network line: icon, name/subtitle, total + ↓/↑, bar.
-    component NetLine: Item {
-        id: nl
-        property var row: ({})
-        property real max: 1
-        property bool compact: false
-        readonly property bool isShared: row.kind === "sharing"
-        width: parent ? parent.width : 0
-        height: nlCol.implicitHeight
-
-        Column {
-            id: nlCol
-            width: parent.width
-            spacing: 4
-
-            Row {
-                width: parent.width
-                spacing: Theme.spacingS
-
-                Rectangle {
-                    width: nl.compact ? 22 : 30
-                    height: width
-                    radius: width / 2
-                    color: Theme.withAlpha(nl.isShared ? Theme.surfaceVariantText : Theme.primary, 0.14)
-                    anchors.verticalCenter: parent.verticalCenter
-                    DankIcon {
-                        anchors.centerIn: parent
-                        name: root.kindIcon(nl.row.kind)
-                        size: nl.compact ? 14 : 18
-                        color: nl.isShared ? Theme.surfaceVariantText : Theme.primary
-                    }
-                }
-
-                Column {
-                    width: parent.width - (nl.compact ? 22 : 30) - rightCol.width - Theme.spacingS * 2
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 1
-                    StyledText {
-                        width: parent.width
-                        text: nl.row.label || ""
-                        elide: Text.ElideRight
-                        font.pixelSize: Theme.fontSizeSmall + (nl.compact ? 0 : 1)
-                        font.weight: Font.Medium
-                        color: nl.isShared ? Theme.surfaceVariantText : Theme.surfaceText
-                    }
-                    StyledText {
-                        visible: !nl.compact
-                        width: parent.width
-                        elide: Text.ElideRight
-                        text: {
-                            let s = root.kindName(nl.row.kind);
-                            if (nl.row.metered)
-                                s += " · metered";
-                            if (nl.row.days !== undefined)
-                                s += " · " + nl.row.days + (nl.row.days === 1 ? " day" : " days") + (nl.row.last ? " · last " + root.dayLabel(nl.row.last).toLowerCase() : "");
-                            return s;
-                        }
-                        font.pixelSize: Theme.fontSizeSmall - 2
-                        color: nl.row.metered ? Theme.warning : Theme.surfaceVariantText
-                    }
-                }
-
-                Column {
-                    id: rightCol
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 1
-                    StyledText {
-                        anchors.right: parent.right
-                        text: root.fmtBytes(nl.row.total)
-                        font.pixelSize: Theme.fontSizeSmall + (nl.compact ? 0 : 1)
-                        font.weight: Font.Bold
-                        color: nl.isShared ? Theme.surfaceVariantText : Theme.surfaceText
-                    }
-                    Row {
-                        anchors.right: parent.right
-                        spacing: 6
-                        StyledText {
-                            text: "↓ " + root.fmtBytes(nl.row.rx)
-                            font.pixelSize: Theme.fontSizeSmall - 2
-                            color: root.downColor
-                        }
-                        StyledText {
-                            text: "↑ " + root.fmtBytes(nl.row.tx)
-                            font.pixelSize: Theme.fontSizeSmall - 2
-                            color: root.upColor
-                        }
-                    }
-                }
-            }
-
-            UsageBar {
-                visible: !nl.compact
-                width: parent.width
-                rx: nl.row.rx || 0
-                tx: nl.row.tx || 0
-                max: nl.max
-                barOpacity: nl.isShared ? 0.45 : 1
-            }
-        }
-    }
-
-    component StatTile: Rectangle {
-        id: st
-        property string title: ""
-        property string value: ""
-        height: 52
-        radius: Theme.cornerRadius
-        color: Theme.withAlpha(Theme.surfaceVariantText, 0.08)
-        Column {
-            anchors.centerIn: parent
-            spacing: 1
-            StyledText {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: st.value
-                font.pixelSize: Theme.fontSizeMedium
-                font.weight: Font.Bold
-                color: Theme.surfaceText
-            }
-            StyledText {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: st.title
-                font.pixelSize: Theme.fontSizeSmall - 2
-                color: Theme.surfaceVariantText
-            }
-        }
-    }
-
     popoutWidth: 400
 
     popoutContent: Component {
@@ -1159,10 +973,11 @@ PluginComponent {
                             model: root.activeList
                             delegate: Rectangle {
                                 required property var modelData
+                                readonly property color tone: modelData.kind === "sharing" ? Theme.surfaceVariantText : modelData.metered ? Theme.warning : Theme.primary
                                 height: 26
                                 width: chipRow.implicitWidth + Theme.spacingS * 2
                                 radius: 13
-                                color: modelData.kind === "sharing" ? Theme.withAlpha(Theme.surfaceVariantText, 0.1) : Theme.withAlpha(modelData.metered ? Theme.warning : Theme.primary, 0.15)
+                                color: Theme.withAlpha(tone, modelData.kind === "sharing" ? 0.1 : 0.15)
                                 Row {
                                     id: chipRow
                                     anchors.centerIn: parent
@@ -1170,7 +985,7 @@ PluginComponent {
                                     DankIcon {
                                         name: root.kindIcon(modelData.kind)
                                         size: 14
-                                        color: modelData.kind === "sharing" ? Theme.surfaceVariantText : modelData.metered ? Theme.warning : Theme.primary
+                                        color: tone
                                         anchors.verticalCenter: parent.verticalCenter
                                     }
                                     StyledText {
@@ -1245,7 +1060,7 @@ PluginComponent {
                     x: Theme.spacingM
                     spacing: Theme.spacingXS
                     Repeater {
-                        model: [["today", "Today"], ["history", "History"], ["networks", "Networks"]]
+                        model: root.tabs
                         delegate: Chip {
                             required property var modelData
                             label: modelData[1]
@@ -1255,323 +1070,48 @@ PluginComponent {
                     }
                 }
 
-                // ── Tab: Today ──
-                Column {
+                TodayTab {
+                    host: root
                     visible: root.tab === "today"
                     width: parent.width - Theme.spacingM * 2
                     x: Theme.spacingM
-                    spacing: Theme.spacingM
-
-                    Rectangle {
-                        width: parent.width
-                        height: 64
-                        radius: Theme.cornerRadius
-                        color: Theme.withAlpha(Theme.surfaceVariantText, 0.08)
-
-                        Column {
-                            anchors.left: parent.left
-                            anchors.leftMargin: Theme.spacingM
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 2
-                            StyledText {
-                                text: "Used today"
-                                font.pixelSize: Theme.fontSizeSmall - 1
-                                color: Theme.surfaceVariantText
-                            }
-                            StyledText {
-                                text: root.fmtBytes(root.todayTotal)
-                                font.pixelSize: Theme.fontSizeLarge + 2
-                                font.weight: Font.Bold
-                                color: Theme.surfaceText
-                            }
-                        }
-                        Column {
-                            anchors.right: parent.right
-                            anchors.rightMargin: Theme.spacingM
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 2
-                            StyledText {
-                                anchors.right: parent.right
-                                text: "↓ " + root.fmtBytes(root.todayTotals.rx)
-                                font.pixelSize: Theme.fontSizeSmall
-                                font.weight: Font.Medium
-                                color: root.downColor
-                            }
-                            StyledText {
-                                anchors.right: parent.right
-                                text: "↑ " + root.fmtBytes(root.todayTotals.tx)
-                                font.pixelSize: Theme.fontSizeSmall
-                                font.weight: Font.Medium
-                                color: root.upColor
-                            }
-                        }
-                    }
-
-                    StyledText {
-                        text: "By network"
-                        font.pixelSize: Theme.fontSizeSmall
-                        font.weight: Font.Bold
-                        color: Theme.surfaceVariantText
-                    }
-
-                    Column {
-                        id: todayList
-                        width: parent.width
-                        spacing: Theme.spacingM
-                        readonly property var rows: root.tab === "today" ? root.dayRows(root.live.today || {}) : []
-                        readonly property real max: root.maxOf(rows)
-
-                        StyledText {
-                            visible: todayList.rows.length === 0
-                            text: "No traffic recorded yet today."
-                            font.pixelSize: Theme.fontSizeSmall
-                            color: Theme.surfaceVariantText
-                        }
-                        Repeater {
-                            model: todayList.rows
-                            delegate: NetLine {
-                                required property var modelData
-                                row: modelData
-                                max: todayList.max
-                            }
-                        }
-                    }
-
-                    StyledText {
-                        visible: root.todayTotals.sharedRx + root.todayTotals.sharedTx > 0
-                        width: parent.width
-                        wrapMode: Text.WordWrap
-                        text: "Hotspot traffic is what your devices pulled through this machine. It already counts toward your uplink, so it is not added to the total again."
-                        font.pixelSize: Theme.fontSizeSmall - 2
-                        color: Theme.surfaceVariantText
-                    }
                 }
 
-                // ── Tab: History ──
-                Column {
-                    id: histTab
+                HistoryTab {
+                    host: root
                     visible: root.tab === "history"
                     width: parent.width - Theme.spacingM * 2
                     x: Theme.spacingM
-                    spacing: Theme.spacingS
-
-                    readonly property var totals: root.tab === "history" ? root.periodTotals() : ({
-                            week: 0,
-                            days30: 0,
-                            month: 0
-                        })
-
-                    Row {
-                        width: parent.width
-                        spacing: Theme.spacingS
-                        StatTile {
-                            width: (parent.width - Theme.spacingS * 2) / 3
-                            title: "Last 7 days"
-                            value: root.fmtBytes(histTab.totals.week)
-                        }
-                        StatTile {
-                            width: (parent.width - Theme.spacingS * 2) / 3
-                            title: "Last 30 days"
-                            value: root.fmtBytes(histTab.totals.days30)
-                        }
-                        StatTile {
-                            width: (parent.width - Theme.spacingS * 2) / 3
-                            title: Qt.formatDate(new Date(), "MMMM")
-                            value: root.fmtBytes(histTab.totals.month)
-                        }
-                    }
-
-                    Flickable {
-                        id: histFlick
-                        width: parent.width
-                        height: Math.min(contentHeight, 330)
-                        contentHeight: histCol.implicitHeight
-                        clip: true
-                        boundsBehavior: Flickable.StopAtBounds
-
-                        Column {
-                            id: histCol
-                            width: histFlick.width
-                            spacing: 2
-                            readonly property var rows: root.tab === "history" ? root.historyRows() : []
-                            readonly property real max: root.maxOf(rows)
-
-                            Repeater {
-                                model: histCol.rows
-                                delegate: Rectangle {
-                                    id: dayRow
-                                    required property var modelData
-                                    readonly property bool open: root.expandedDay === modelData.date
-                                    width: histCol.width
-                                    height: dayCol.implicitHeight + Theme.spacingS * 2
-                                    radius: Theme.cornerRadius / 2
-                                    color: open || dayMouse.containsMouse ? Theme.withAlpha(Theme.surfaceVariantText, 0.1) : "transparent"
-
-                                    MouseArea {
-                                        id: dayMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: root.expandedDay = dayRow.open ? "" : dayRow.modelData.date
-                                    }
-
-                                    Column {
-                                        id: dayCol
-                                        x: Theme.spacingS
-                                        y: Theme.spacingS
-                                        width: parent.width - Theme.spacingS * 2
-                                        spacing: Theme.spacingS
-
-                                        Row {
-                                            width: parent.width
-                                            spacing: Theme.spacingS
-                                            StyledText {
-                                                id: dLabel
-                                                width: 92
-                                                text: root.dayLabel(dayRow.modelData.date)
-                                                font.pixelSize: Theme.fontSizeSmall
-                                                font.weight: dayRow.modelData.date === root.live.day ? Font.Bold : Font.Normal
-                                                color: dayRow.modelData.date === root.live.day ? Theme.primary : Theme.surfaceText
-                                                anchors.verticalCenter: parent.verticalCenter
-                                            }
-                                            UsageBar {
-                                                width: parent.width - dLabel.width - dTotal.width - Theme.spacingS * 2
-                                                anchors.verticalCenter: parent.verticalCenter
-                                                rx: dayRow.modelData.rx
-                                                tx: dayRow.modelData.tx
-                                                max: histCol.max
-                                            }
-                                            StyledText {
-                                                id: dTotal
-                                                width: 70
-                                                horizontalAlignment: Text.AlignRight
-                                                text: root.fmtBytes(dayRow.modelData.total)
-                                                font.pixelSize: Theme.fontSizeSmall
-                                                font.weight: Font.Medium
-                                                color: Theme.surfaceText
-                                                anchors.verticalCenter: parent.verticalCenter
-                                            }
-                                        }
-
-                                        // Expanded: ↓/↑ split and per-network breakdown
-                                        Column {
-                                            visible: dayRow.open
-                                            width: parent.width
-                                            spacing: Theme.spacingS
-                                            Row {
-                                                spacing: Theme.spacingM
-                                                StyledText {
-                                                    text: "↓ " + root.fmtBytes(dayRow.modelData.rx)
-                                                    font.pixelSize: Theme.fontSizeSmall - 1
-                                                    color: root.downColor
-                                                }
-                                                StyledText {
-                                                    text: "↑ " + root.fmtBytes(dayRow.modelData.tx)
-                                                    font.pixelSize: Theme.fontSizeSmall - 1
-                                                    color: root.upColor
-                                                }
-                                            }
-                                            Repeater {
-                                                model: dayRow.open ? dayRow.modelData.nets : []
-                                                delegate: NetLine {
-                                                    required property var modelData
-                                                    row: modelData
-                                                    compact: true
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
 
-                // ── Tab: Networks ──
-                Column {
+                NetworksTab {
+                    host: root
                     visible: root.tab === "networks"
                     width: parent.width - Theme.spacingM * 2
                     x: Theme.spacingM
-                    spacing: Theme.spacingM
-
-                    Row {
-                        spacing: Theme.spacingXS
-                        Repeater {
-                            model: [[7, "7 days"], [30, "30 days"], [0, "All"]]
-                            delegate: Chip {
-                                required property var modelData
-                                label: modelData[1]
-                                selected: root.netPeriod === modelData[0]
-                                onClicked: root.netPeriod = modelData[0]
-                            }
-                        }
-                    }
-
-                    Flickable {
-                        id: netFlick
-                        width: parent.width
-                        height: Math.min(contentHeight, 360)
-                        contentHeight: netCol.implicitHeight
-                        clip: true
-                        boundsBehavior: Flickable.StopAtBounds
-
-                        Column {
-                            id: netCol
-                            width: netFlick.width
-                            spacing: Theme.spacingM
-                            readonly property var rows: root.tab === "networks" ? root.networkRows(root.netPeriod) : []
-                            readonly property real max: root.maxOf(rows)
-
-                            StyledText {
-                                visible: netCol.rows.length === 0
-                                text: "No data for this period."
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: Theme.surfaceVariantText
-                            }
-                            Repeater {
-                                model: netCol.rows
-                                delegate: NetLine {
-                                    required property var modelData
-                                    row: modelData
-                                    max: netCol.max
-                                }
-                            }
-                        }
-                    }
                 }
 
                 // ── Legend ──
                 Row {
                     x: Theme.spacingM
                     spacing: Theme.spacingM
-                    Row {
-                        spacing: 4
-                        Rectangle {
-                            width: 10
-                            height: 10
-                            radius: 5
-                            color: root.downColor
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        StyledText {
-                            text: "Download"
-                            font.pixelSize: Theme.fontSizeSmall - 2
-                            color: Theme.surfaceVariantText
-                        }
-                    }
-                    Row {
-                        spacing: 4
-                        Rectangle {
-                            width: 10
-                            height: 10
-                            radius: 5
-                            color: root.upColor
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        StyledText {
-                            text: "Upload"
-                            font.pixelSize: Theme.fontSizeSmall - 2
-                            color: Theme.surfaceVariantText
+                    Repeater {
+                        model: [["Download", root.downColor], ["Upload", root.upColor]]
+                        delegate: Row {
+                            required property var modelData
+                            spacing: 4
+                            Rectangle {
+                                width: 10
+                                height: 10
+                                radius: 5
+                                color: modelData[1]
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            StyledText {
+                                text: modelData[0]
+                                font.pixelSize: Theme.fontSizeSmall - 2
+                                color: Theme.surfaceVariantText
+                            }
                         }
                     }
                 }
